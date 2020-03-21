@@ -25,6 +25,15 @@
 #  ./s3_tool.sh copy_to_bucket --key_file file_name  --new_bucket bucket_name
 # copy objects  keys from file to new_bucket
 
+# ./s3_tool.sh get_keys_bucket_prefix --key_file test_keys --buckets bucket_name --prefix prefix_name
+# get keys list from bucket and prefix
+
+# ./s3_tool.sh get_keys_bucket --key_file test_keys --buckets bucket_name
+# get keys list from bucket and prefix
+
+#./s3_tool.sh check_keys_file --source_file /tmp/product_photo2.txt --bucket_file test_keys --dif_file diff_file
+# find  each key from source_file and find it in  bucket_file   . if key not exist add it to dif_file
+
 
 # flags :
 # --acl
@@ -47,8 +56,8 @@
 
 
 command=$1
-declare -i max_paralel_proces=50
-declare -i delay_after=100
+declare -i max_paralel_proces=21
+declare -i delay_after=20
 declare -i send_keys=0
 max_items=400
 wait_sleep=1
@@ -103,6 +112,70 @@ function s3_cp {
 
 
 }
+
+function check_keys_file  {
+#1 source_file
+#2 bucket_file
+#3 dif_file
+rm -f $3
+declare -i line=1
+all_line=$(wc -l $1)
+echo " source_file =$1 bucket_file=$2  dif_file=$3  "
+while IFS= read -r LINE || [ -n "$LINE" ];
+ do
+  bucket=$(echo $LINE | cut -f1 -d'/' )
+  key=$(echo $LINE |cut -f1 -d' ' | sed -e 's/'$bucket'\///'g )
+  result=$(grep  "$key" $2)
+  if [ -z "$result" ];
+   then
+    echo $key>>$3
+
+    fi
+  echo " line $line of $all_line "
+  line+=1
+ done <$1
+
+}
+
+
+function get_keys_bucket {
+#1 bucket
+#2 prefix
+#3 file
+echo "***** $(date +%F:%H:%M:%S)  === backet =====  start_time=$start_time "  | tee -a $log_app
+echo "$1" | tee -a $log_app
+echo "***** $(date +%F:%H:%M:%S)  prefix  : $(echo $2 | cut -f2 -d ' ') " | tee -a $log_app
+
+bucket=$1
+
+rm -f $3
+nexttoken='init'
+declare -i all_keys=0
+while [ -n "$nexttoken" ]
+ do
+  case $nexttoken in
+   init)
+    json=$(aws s3api list-objects-v2     --bucket $bucket --profile $aws_profile --max-items $max_items $2 )
+    ;;
+   *)
+   json=$(aws s3api list-objects-v2     --bucket $bucket --profile $aws_profile --max-items $max_items $2 --starting-token $nexttoken )
+   ;;
+  esac
+ echo $json |jq -r '.Contents[].Key' >>$3
+ nexttoken=$(echo $json |jq -r '.NextToken')
+ all_keys+=$max_items
+ echo "**** get $all_keys  keys"
+ if [[ "$nexttoken" == "null" ]] ; then
+  nexttoken=''
+  echo "nexttoken  null"
+ fi
+# awk '{print "s3_bucket_name/"$0}' $3
+# echo "keys =  $(wc -l)"
+done
+
+
+}
+
 function command_buckets {
 #1 -buckets
    echo "***** $(date +%F:%H:%M:%S)  === backets =====  start_time=$start_time "  | tee -a $log_app
@@ -199,6 +272,26 @@ while [[ $# > 0 ]]; do
          key_file="$2"
          shift
       ;;
+      --split_number)
+         split_number="$2"
+         shift
+      ;;
+      --split_prefix)
+         split_prefix="$2"
+         shift
+      ;;
+      --source_file)
+         source_file="$2"
+         shift
+      ;;
+      --bucket_file)
+         bucket_file="$2"
+         shift
+      ;;
+      --dif_file)
+         dif_file="$2"
+         shift
+      ;;
 
        *)
         ;;
@@ -248,7 +341,7 @@ case $command in
  set_acl_from_file)
          declare -i all_keys=0
          echo "***** $(date +%F:%H:%M:%S)   set_acl_from_file  start_time=$start_time " | tee -a $log_app
-         while read LINE;
+         while IFS= read -r LINE || [ -n "$LINE" ];
          do
           bucket=$(echo $LINE | cut -f1 -d'/' )
           key=$(echo $LINE |cut -f1 -d' ' | sed -e 's/'$bucket'\///'g )
@@ -278,19 +371,36 @@ case $command in
          s3=$(get_s3_buckets)
          echo $s3
   ;;
+
+  get_keys_bucket_prefix)
+         echo "get_keys_bucket $buckets   . save to file $key_file"
+         get_keys_bucket $buckets "--prefix $prefix" $key_file
+
+  ;;
+  get_keys_bucket)
+         echo "get_keys_bucket $buckets   . save to file $key_file"
+         get_keys_bucket $buckets "" $key_file
+
+  ;;
+
+
+  check_keys_file)
+    check_keys_file $source_file  $bucket_file $dif_file
+  ;;
+
   copy_to_bucket)
         keys_to_copy=$(wc -l $key_file)
-        echo "key to copy  $keys_to_copy"
+        echo "$key_file has $keys_to_copy keys to copy  "
         declare -i all_keys=0
-         echo "***** $(date +%F:%H:%M:%S)   copy to new bucket  start_time=$start_time " | tee -a $log_app
-         while read LINE;
+         echo "***** $(date +%F:%H:%M:%S) $key_file   copy to new bucket  start_time=$start_time " | tee -a $log_app
+         while IFS= read -r LINE || [ -n "$LINE" ];
          do
-          echo "bucket $new_bucket    $LINE"
+ #         echo "bucket $new_bucket    $LINE"
           declare -i paralel_proces=0
           paralel_proces+=$(ps aux | grep aws  | wc -l)
           while [[ $max_paralel_proces -lt $paralel_proces ]]
            do
-            echo "***** $(date +%F:%H:%M:%S) sleep  paralel_proces = $paralel_proces  max_paralel_proces=$max_paralel_proces  start_time=$start_time  " | tee -a $log_app
+            echo "***** $(date +%F:%H:%M:%S)  $key_file sleep  paralel_proces = $paralel_proces  max_paralel_proces=$max_paralel_proces  start_time=$start_time  " | tee -a $log_app
             sleep 1
             declare -i paralel_proces=0
             paralel_proces+=$(ps aux | grep aws  | wc -l)
@@ -299,14 +409,36 @@ case $command in
            send_keys+=1
            all_keys+=1
            if [[ ! "$send_keys" -lt "$delay_after" ]] ; then
-             echo "***** $(date +%F:%H:%M:%S) send $all_keys keys of $keys_to_copy  wait_sleep $wait_sleep   start_time=$start_time" | tee -a $log_app
+             echo "***** $(date +%F:%H:%M:%S) $key_file send $all_keys keys of $keys_to_copy  wait_sleep $wait_sleep   start_time=$start_time" | tee -a $log_app
              sleep $wait_sleep
              declare -i send_keys=0
            fi
 
          done < $key_file
-  ;;
+    echo "***** $key_file    done  "
+    echo "***** $key_file    done  "  >/var/log/s3_log
 
+  ;;
+  split_file)
+    declare -i file_line=0
+    declare -i file_line_count=$(wc -l $key_file  | cut -d' ' -f1)
+    declare -i max_file_line=$((file_line_count/$split_number))
+    echo "file_line_count=$file_line_count"
+    echo "max_file_line=$max_file_line"
+    declare -i file_posfix=0
+    while IFS= read -r LINE || [ -n "$LINE" ];
+      do
+       if [[ "$file_line" -ge "$max_file_line" ]] ; then
+         file_posfix+=1
+         declare -i file_line=0
+         echo "file_posfix=$file_posfix"
+       fi
+       current_file_name=$split_prefix"_"$file_posfix
+
+       echo "$LINE">> $current_file_name
+       file_line+=1
+      done < $key_file
+  ;;
 
   *)
          echo "***** none command"
